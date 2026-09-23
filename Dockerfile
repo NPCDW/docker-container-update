@@ -10,13 +10,7 @@ RUN cargo build --release
 FROM docker:cli
 
 # supercronic：为容器设计的 crontab 任务运行器（静态编译，Alpine 可直接用）
-ARG SUPERCRONIC_VERSION=v0.2.49
-ARG SUPERCRONIC_SHA1SUM=e63c11a9726b775a6a11801e81af4f3fb926aa68
-RUN apk add --no-cache tzdata \
-    && curl -fsSL -o /usr/local/bin/supercronic \
-        "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-amd64" \
-    && echo "${SUPERCRONIC_SHA1SUM}  /usr/local/bin/supercronic" | sha1sum -c - \
-    && chmod +x /usr/local/bin/supercronic
+RUN apk add --no-cache -f tzdata supercronic
 
 WORKDIR /docker-container-update
 COPY --from=rust-build /usr/src/docker-container-update/target/release/docker-container-update /docker-container-update/docker-container-update
