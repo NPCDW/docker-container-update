@@ -23,23 +23,24 @@ cargo build --release
 
 ## 容器用法
 
-镜像内置 crond，容器启动即运行 crond 守护进程，每天凌晨 2:20 执行一次 `docker-container-update`。
-容器不跑更新任务本身，只负责定时拉起，因此 `CMD` 是 `crond -f`，日志走 stderr，方便 `docker logs` 直接看。
+镜像内置 [supercronic](https://github.com/aptible/supercronic)（为容器设计的 crontab 任务运行器），
+容器启动即由它作为 PID 1 前台运行，每天凌晨 2:20 执行一次 `docker-container-update`。
 
 ```bash
 docker run -d --name docker-container-update --restart unless-stopped \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /usr/local/soft:/usr/local/soft \
-  -v "$PWD/logs:/var/log/docker-container-update" \
   -e TZ=Asia/Shanghai \
   npcdw/docker-container-update
 ```
 
-- 定时任务写在 `/var/spool/cron/crontabs/root`：`20 2 * * *`。
-- 更新输出追加到容器内 `/var/log/docker-container-update/run.log`，用 `docker logs` 看到的是 crond 自身的日志。
+- 定时任务写在镜像内 `/etc/docker-container-update.crontab`：`20 2 * * *`。
+- 任务输出（含 supercronic 的执行记录）直接用 `docker logs -f docker-container-update` 看。
 - 容器时区由 `TZ` 决定，「凌晨 2:20」按该时区计算，默认 `Asia/Shanghai`。
+- 容器环境变量（`TZ`、`DCU_*` 等）会原样传给定时任务，不会像系统 cron 那样被清掉。
 - 想临时手动跑一次：`docker exec docker-container-update docker-container-update --dry-run`。
-- 要改时间，挂载自定义 crontab 覆盖即可：`-v "$PWD/crontab:/var/spool/cron/crontabs/root:ro"`。
+- 要改时间，挂载自定义 crontab 覆盖即可：`-v "$PWD/crontab:/etc/docker-container-update.crontab:ro"`。
+- 改完 crontab 想热加载：`docker kill -s USR2 docker-container-update`。
 
 ## 快速开始
 

@@ -6,8 +6,8 @@ services:
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
       - "/usr/local/soft:/usr/local/soft"
-      # 定时任务日志目录，跟着重启也能留档
-      - "./logs:/var/log/docker-container-update"
+      # 想改定时时间：挂载自定义 crontab 覆盖镜像内置的那份
+      # - "./crontab:/etc/docker-container-update.crontab:ro"
     environment:
       TZ: 'Asia/Shanghai'
       LANG: 'C.UTF-8'

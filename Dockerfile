@@ -9,18 +9,23 @@ RUN cargo build --release
 
 FROM docker:cli
 
-# busybox 自带 crond，用它做守护进程，不再额外装 cron 包
-RUN apk add --no-cache tzdata busybox-extras \
-    && mkdir -p /var/spool/cron/crontabs /var/log/docker-container-update
-
-# 定时任务：每天凌晨 2:20 执行一次更新，日志追加到文件
-RUN echo '20 2 * * * /usr/local/bin/docker-container-update >> /var/log/docker-container-update/run.log 2>&1' \
-        > /var/spool/cron/crontabs/root \
-    && chmod 600 /var/spool/cron/crontabs/root
+# supercronic：为容器设计的 crontab 任务运行器（静态编译，Alpine 可直接用）
+ARG SUPERCRONIC_VERSION=v0.2.49
+ARG SUPERCRONIC_SHA1SUM=e63c11a9726b775a6a11801e81af4f3fb926aa68
+RUN apk add --no-cache tzdata \
+    && curl -fsSL -o /usr/local/bin/supercronic \
+        "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-amd64" \
+    && echo "${SUPERCRONIC_SHA1SUM}  /usr/local/bin/supercronic" | sha1sum -c - \
+    && chmod +x /usr/local/bin/supercronic
 
 WORKDIR /docker-container-update
 COPY --from=rust-build /usr/src/docker-container-update/target/release/docker-container-update /docker-container-update/docker-container-update
 RUN ln -s /docker-container-update/docker-container-update /usr/local/bin/docker-container-update
 
-# crond 需要前台运行（-f）且日志打到 stderr（-d 8），才能作为容器的 PID 1
-CMD ["crond", "-f", "-d", "8", "-c", "/var/spool/cron/crontabs"]
+# 定时任务：每天凌晨 2:20 执行一次更新。
+# supercronic 把任务输出直接打到容器 stdout/stderr，不再需要自己重定向到文件。
+RUN printf '# 每天凌晨 2:20 执行一次更新\n20 2 * * * /usr/local/bin/docker-container-update\n' \
+        > /etc/docker-container-update.crontab
+
+# supercronic 作为 PID 1 前台运行：容器环境变量直传任务、SIGTERM 优雅退出
+CMD ["supercronic", "-passthrough-logs", "/etc/docker-container-update.crontab"]
