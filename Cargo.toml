@@ -8,7 +8,7 @@ description = "扫描指定目录下的 docker-compose 文件，并对容器执�
 license = "MIT"
 
 [[bin]]
-name = "dcu"
+name = "docker-container-update"
 path = "src/main.rs"
 
 [dependencies]

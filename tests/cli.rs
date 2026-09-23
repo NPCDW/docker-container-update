@@ -43,11 +43,11 @@ fn nest_inside_stack(stacks: &Path) {
 
 /// 调用被测二进制；工作目录交给调用方通过 env 控制。
 fn run(bindir: &Path, args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
-    let exe = env!("CARGO_BIN_EXE_dcu");
+    let exe = env!("CARGO_BIN_EXE_docker-container-update");
     let mut cmd = Command::new(exe);
     cmd.args(args)
         .arg("--config")
-        .arg(bindir.join("dcu.yaml"))
+        .arg(bindir.join("docker-container-update.yaml"))
         .current_dir("/");
     for (k, v) in envs {
         cmd.env(k, v);
@@ -66,7 +66,7 @@ fn write_config(bindir: &Path, stacks: &Path, extra: &str) {
         "compose:\n  dir: {}\n  max_depth: 2\n{extra}\n",
         stacks.display()
     );
-    fs::write(bindir.join("dcu.yaml"), config).unwrap();
+    fs::write(bindir.join("docker-container-update.yaml"), config).unwrap();
 }
 
 fn listed(stdout: &str) -> Vec<String> {

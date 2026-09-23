@@ -1,6 +1,6 @@
 //! docker-container-update：递归扫描目录下的 docker-compose 文件，并逐个执行更新。
 //!
-//! 用法：`dcu [选项] [子命令]`，不带子命令时等价于 `dcu update`。
+//! 用法：`docker-container-update [选项] [子命令]`，不带子命令时等价于 `docker-container-update update`。
 
 mod compose;
 mod config;
@@ -19,7 +19,7 @@ use crate::scanner::ComposeProject;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "dcu",
+    name = "docker-container-update",
     version,
     about = "扫描 docker-compose 目录并更新容器",
     long_about = "递归扫描指定目录下的 docker-compose 文件，对每个项目执行 docker compose pull 与 up -d。\n工作目录固定为程序自身所在目录，与在哪个路径调用无关。"
@@ -28,7 +28,7 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
 
-    /// 配置文件路径，默认取程序所在目录下的 dcu.yaml
+    /// 配置文件路径，默认取程序所在目录下的 docker-container-update.yaml
     #[arg(short = 'c', long, global = true, value_name = "FILE")]
     config: Option<PathBuf>,
 

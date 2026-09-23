@@ -16,45 +16,67 @@
 
 ```bash
 cargo build --release
-# 产物: target/release/dcu
+# 产物: target/release/docker-container-update
 ```
 
-把 `dcu` 放到目标机任意目录即可，配置文件和它同级。
+把 `docker-container-update` 放到目标机任意目录即可，配置文件和它同级。
+
+## 容器用法
+
+镜像内置 crond，容器启动即运行 crond 守护进程，每天凌晨 2:20 执行一次 `docker-container-update`。
+容器不跑更新任务本身，只负责定时拉起，因此 `CMD` 是 `crond -f`，日志走 stderr，方便 `docker logs` 直接看。
+
+```bash
+docker run -d --name docker-container-update --restart unless-stopped \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /usr/local/soft:/usr/local/soft \
+  -v "$PWD/logs:/var/log/docker-container-update" \
+  -e TZ=Asia/Shanghai \
+  npcdw/docker-container-update
+```
+
+- 定时任务写在 `/var/spool/cron/crontabs/root`：`20 2 * * *`。
+- 更新输出追加到容器内 `/var/log/docker-container-update/run.log`，用 `docker logs` 看到的是 crond 自身的日志。
+- 容器时区由 `TZ` 决定，「凌晨 2:20」按该时区计算，默认 `Asia/Shanghai`。
+- 想临时手动跑一次：`docker exec docker-container-update docker-container-update --dry-run`。
+- 要改时间，挂载自定义 crontab 覆盖即可：`-v "$PWD/crontab:/var/spool/cron/crontabs/root:ro"`。
 
 ## 快速开始
 
+下文的 `docker-container-update` 指可执行文件本体。
+
 ```bash
 # 1. 在可执行文件所在目录生成带注释的默认配置
-./dcu --init
+./docker-container-update --init
 
-# 2. 编辑 dcu.yaml，把 compose.dir 指向你的 docker-compose 目录
+# 2. 编辑 docker-container-update.yaml，把 compose.dir 指向你的 docker-compose 目录
 
 # 3. 查看会扫描到哪些文件
-./dcu list
+./docker-container-update list
 
 # 4. 先演练一遍
-./dcu --dry-run
+./docker-container-update --dry-run
 
 # 5. 正式执行
-./dcu
+./docker-container-update
 ```
 
 ## 命令
 
 | 命令 | 说明 |
 | --- | --- |
-| `dcu` / `dcu update` | 扫描并更新容器（默认行为） |
-| `dcu list` / `dcu ls` | 仅列出扫描到的 docker-compose 文件 |
-| `dcu config` | 打印生效配置（含环境变量覆盖后的结果） |
-| `dcu --init` | 生成带注释的默认配置文件 |
+| `update`（可省略） | 扫描并更新容器（默认行为） |
+| `list`（别名 `ls`） | 仅列出扫描到的 docker-compose 文件 |
+| `config` | 打印生效配置（含环境变量覆盖后的结果） |
+| `--init` | 生成带注释的默认配置文件 |
 
 选项：`-c/--config <FILE>`、`-n/--dry-run`、`-v/--verbose`。
 
 ## 配置
 
-配置文件名固定为 `dcu.yaml`，位于可执行文件同目录；也可以用 `-c` 指定别处。
+配置文件名固定为 `docker-container-update.yaml`，位于可执行文件同目录；也可以用 `-c` 指定别处。
 
-每个配置项的正上方就是它的说明注释，完整示例见 [`dcu.yaml`](dcu.yaml)：
+每个配置项的正上方就是它的说明注释，完整示例见 [`docker-container-update.yaml`](docker-container-update.yaml)：
 
 ```yaml
 compose:
