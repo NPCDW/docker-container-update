@@ -1,0 +1,11 @@
+services:
+  postman-backup:
+    image: npcdw/docker-container-update
+    container_name: docker-container-update
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - "/usr/local/soft:/usr/local/soft"
+    environment:
+      TZ: 'Asia/Shanghai'
+      LANG: 'C.UTF-8'
+      LC_ALL: 'C.UTF-8'

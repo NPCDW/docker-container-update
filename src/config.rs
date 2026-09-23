@@ -457,7 +457,7 @@ compose:
   # 容器不存在或已停止时跳过 up，只做 pull
   up: true
   # up 时是否附带 --remove-orphans
-  remove_orphans: true
+  remove_orphans: false
   # 全部更新完成后是否执行 docker image prune -f
   prune: false
   # 追加到 up 之后的额外参数，如 ["--wait"]
