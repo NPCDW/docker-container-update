@@ -471,3 +471,169 @@ fn dry_run_still_prints_up_without_pull_check() {
     assert!(stdout.contains("pull"), "dry-run 应打印 pull: {stdout}");
     assert!(stdout.contains("up -d"), "dry-run 应打印 up: {stdout}");
 }
+
+/// pre_command / post_command 依次在 pull 之前与 post 之后执行，
+/// 且工作目录与 compose 命令一致。
+#[test]
+fn pre_and_post_commands_run_in_project_directory() {
+    let (_root, bindir, stacks) = setup();
+    // 把钩子的调用记到固定文件里，避免与假 compose 的输出混在一起。
+    let log = bindir.join("hooks.log");
+    write_config(
+        &bindir,
+        &stacks,
+        &format!(
+            "  pre_command: 'echo pre >> {}; echo cwd=$PWD >> {}'\n  post_command: 'echo post >> {}'\n",
+            log.display(),
+            log.display(),
+            log.display()
+        ),
+    );
+    let fake = fake_compose(&bindir, true);
+
+    let (code, _stdout, stderr) = run(
+        &bindir,
+        &[],
+        &[
+            ("DCU_COMPOSE_COMMAND", fake.to_str().unwrap()),
+            ("DCU_WHITELIST_ENABLE", "true"),
+            ("DCU_WHITELIST_DIRS", "nginx/api"),
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}");
+
+    let content = fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        content.lines().collect::<Vec<_>>(),
+        vec![
+            "pre".to_string(),
+            format!("cwd={}", stacks.join("nginx/api").display()),
+            "post".to_string(),
+        ],
+        "钩子应各执行一次，且工作目录是 compose 文件所在目录: {content}"
+    );
+}
+
+/// dry-run 只打印钩子命令，不执行。
+#[test]
+fn dry_run_prints_hooks_without_running() {
+    let (_root, bindir, stacks) = setup();
+    let log = bindir.join("hooks.log");
+    write_config(
+        &bindir,
+        &stacks,
+        &format!(
+            "  pre_command: 'echo pre >> {}'\n  post_command: 'echo post >> {}'\n",
+            log.display(),
+            log.display()
+        ),
+    );
+
+    let (code, stdout, stderr) = run(
+        &bindir,
+        &["--dry-run"],
+        &[
+            ("DCU_WHITELIST_ENABLE", "true"),
+            ("DCU_WHITELIST_DIRS", "nginx/api"),
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout.contains("/bin/sh -c echo pre"),
+        "dry-run 应打印 pre: {stdout}"
+    );
+    assert!(
+        stdout.contains("/bin/sh -c echo post"),
+        "dry-run 应打印 post: {stdout}"
+    );
+    assert!(!log.exists(), "dry-run 不应真的执行钩子");
+}
+
+/// pre_command 失败时跳过 pull 与 up，但仍然执行 post_command。
+#[test]
+fn failing_pre_command_skips_pull_and_up_but_runs_post() {
+    let (_root, bindir, stacks) = setup();
+    let log = bindir.join("hooks.log");
+    write_config(
+        &bindir,
+        &stacks,
+        &format!(
+            "  pre_command: 'exit 3'\n  post_command: 'echo post >> {}'\n",
+            log.display()
+        ),
+    );
+    let fake = fake_compose(&bindir, true);
+
+    let (code, stdout, stderr) = run(
+        &bindir,
+        &["--verbose"],
+        &[
+            ("DCU_COMPOSE_COMMAND", fake.to_str().unwrap()),
+            ("DCU_WHITELIST_ENABLE", "true"),
+            ("DCU_WHITELIST_DIRS", "nginx/api"),
+        ],
+    );
+    assert_ne!(code, 0, "pre 失败应让进程以非 0 退出: {stdout}{stderr}");
+    assert!(
+        calls(&stdout).is_empty(),
+        "pre 失败后不应再调用 compose: {stdout}"
+    );
+    assert_eq!(
+        fs::read_to_string(&log).unwrap().trim(),
+        "post",
+        "post 仍应执行"
+    );
+}
+
+/// pull 失败时 post_command 仍要执行（收尾动作不能被跳过）。
+#[test]
+fn post_command_runs_even_when_pull_fails() {
+    let (_root, bindir, stacks) = setup();
+    let log = bindir.join("hooks.log");
+    write_config(
+        &bindir,
+        &stacks,
+        &format!("  post_command: 'echo post >> {}'\n", log.display()),
+    );
+    let dir = bindir.join("fake-bin");
+    fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("fake-compose.sh");
+    fs::write(&script, "#!/bin/sh\nexit 1\n").unwrap();
+    let mut perms = fs::metadata(&script).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&script, perms).unwrap();
+
+    let (code, _stdout, stderr) = run(
+        &bindir,
+        &[],
+        &[
+            ("DCU_COMPOSE_COMMAND", script.to_str().unwrap()),
+            ("DCU_WHITELIST_ENABLE", "true"),
+            ("DCU_WHITELIST_DIRS", "nginx/api"),
+        ],
+    );
+    assert_ne!(code, 0, "pull 失败应让进程以非 0 退出: {stderr}");
+    assert_eq!(
+        fs::read_to_string(&log).unwrap().trim(),
+        "post",
+        "pull 失败后 post 仍应执行"
+    );
+}
+
+/// pre_command / post_command 可以用环境变量覆盖，并出现在 config 子命令的输出里。
+#[test]
+fn hook_commands_come_from_env() {
+    let (_root, bindir, stacks) = setup();
+    write_config(&bindir, &stacks, "");
+    let (code, stdout, stderr) = run(
+        &bindir,
+        &["config"],
+        &[
+            ("DCU_COMPOSE_PRE_COMMAND", "echo hello"),
+            ("DCU_COMPOSE_POST_COMMAND", "echo bye"),
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("pre_command: echo hello"), "{stdout}");
+    assert!(stdout.contains("post_command: echo bye"), "{stdout}");
+}

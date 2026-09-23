@@ -28,12 +28,22 @@ pub fn update_project(
     base.push("-f".to_string());
     base.push(project.file_path().display().to_string());
 
-    // pull / up 都失败时仍继续跑另一条命令，最后统一报错。
+    // pull / up / pre / post 中任何一条失败都不打断其余命令，最后统一报错。
     let mut first_error: Option<anyhow::Error> = None;
+
+    // pre_command 是「扫描前」钩子：它成功了才轮到 pull/up。
+    // 失败说明依赖没准备好，继续 pull/up 没有意义，因此只跑 post 收尾。
+    let mut pre_ok = true;
+    if let Some(pre) = config.compose.pre_args() {
+        if let Err(err) = run(&pre, project, dry_run, verbose) {
+            pre_ok = false;
+            first_error.get_or_insert(err);
+        }
+    }
 
     // pull 本次是否拉到了新镜像。pull 未执行或未拉到内容时为 false。
     let mut pulled_something = false;
-    if config.compose.pull {
+    if config.compose.pull && pre_ok {
         let mut args = base.clone();
         args.push("pull".to_string());
         match run_capture(&args, project, dry_run, verbose) {
@@ -44,7 +54,7 @@ pub fn update_project(
         }
     }
 
-    if config.compose.up {
+    if config.compose.up && pre_ok {
         // pull 明确「什么都没拉到」时直接跳过 up：镜像没变，up 只会空跑。
         // 只有在 pull 实际执行过、且明确报告无更新时才跳过，
         // 未开启 pull 或 dry-run 场景仍按原逻辑推进。
@@ -69,6 +79,14 @@ pub fn update_project(
                     println!("  跳过 up: {reason}");
                 }
             }
+        }
+    }
+
+    // post_command 是「更新完成后」钩子，无论前面成功失败都要跑，
+    // 否则失败时收尾动作（清理旧镜像、发通知等）会被跳过。
+    if let Some(post) = config.compose.post_args() {
+        if let Err(err) = run(&post, project, dry_run, verbose) {
+            first_error.get_or_insert(err);
         }
     }
 
