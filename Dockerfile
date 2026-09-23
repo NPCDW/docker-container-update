@@ -15,8 +15,10 @@ RUN if [ "$TARGETARCH" = "amd64" ]; then \
 WORKDIR /usr/src/docker-container-update
 COPY ./Cargo.toml ./Cargo.lock ./
 COPY ./src ./src
-
+COPY ./tests ./tests
+# 先跑测试再构建产物，测试不过就不会产出有问题的镜像。
 RUN RUST_TARGET=$([ "$TARGETARCH" = "amd64" ] && echo "x86_64-unknown-linux-musl" || echo "aarch64-unknown-linux-musl") \
+    && cargo test --target "$RUST_TARGET" \
     && cargo build --release --target "$RUST_TARGET" \
     && cp "target/$RUST_TARGET/release/docker-container-update" /docker-container-update
 

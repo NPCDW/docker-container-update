@@ -4,7 +4,9 @@
 
 ## 特性
 
-- **工作目录固定为程序所在目录**：不管在哪个路径调用，配置文件与相对路径都相对可执行文件本身解析。
+- **配置目录固定为程序所在目录**：不管在哪个路径调用，配置文件与相对路径都相对可执行文件本身解析。
+- **compose 命令在 compose 文件所在目录执行**：`ps` / `pull` / `up` 都先切到 compose 文件所在目录，
+  并用绝对路径的 `-f` 指定文件，`.env` 与相对 bind mount 都相对该目录解析。
 - **YAML 配置**：所有配置项都可以用环境变量覆盖。
 - **递归扫描**：可配置最大递归层级，默认最多 2 层；目录里出现 compose 文件即视为栈根，不再下探其子目录。
 - **白名单 / 黑名单**：启用白名单时只扫描命中的目录；启用黑名单时扫描除命中目录以外的其他目录。
@@ -181,11 +183,13 @@ DCU_WHITELIST_DIRS=nginx/api,nginx/web
 ## 行为说明
 
 - 每个命中的目录执行 `docker compose pull` 与 `docker compose up -d`，
-  命令在 compose 文件所在目录下运行（这样 `.env` 才会被读取）。
-- compose 文件不是 `docker-compose.yml` / `compose.yaml` 时自动补 `-f <文件名>`。
-- **`up -d` 前先检查容器状态**：
+  命令的工作目录一律是 compose 文件所在目录（这样 `.env` 才会被读取），
+  同时把 `PWD` 环境变量也设为该目录，兼容自身不做该处理的 compose 实现（如 `docker-compose`）。
+- 命令统一带 `-f <compose 文件绝对路径>`，文件名不是默认值时同样成立。
+- `-v` 与 `--dry-run` 打印的命令都带 `(cwd=<目录>)` 前缀，便于确认工作目录。
+- **`up -d` 前先检查容器状态**（探测命令与 `pull`/`up` 在同一个工作目录下执行）：
   1. `docker compose ps -q` 为空 → 容器不存在，跳过 `up`；
-  2. `docker compose ps --status running -q` 为空 → 容器已停止，跳过 `up`；
+  2. `docker compose ps --status=running -q` 为空 → 容器已停止，跳过 `up`；
   3. 两者都非空才执行 `up -d`。
 
   跳过时打印 `跳过 up: 容器不存在` / `跳过 up: 容器已停止`，且不算失败。

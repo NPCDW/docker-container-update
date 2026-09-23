@@ -1,5 +1,6 @@
 //! 对单个 compose 项目执行 pull / up。
 
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
@@ -20,7 +21,9 @@ pub fn update_project(
 ) -> Result<()> {
     let mut base = config.compose.command_args();
     // `-f` 是 compose 的全局参数，必须排在子命令之前。
-    base.extend(project.file_args());
+    // 用绝对路径，保证即使命令没有在 compose 文件所在目录执行也指向同一个文件。
+    base.push("-f".to_string());
+    base.push(project.file_path().display().to_string());
 
     // pull / up 都失败时仍继续跑另一条命令，最后统一报错。
     let mut first_error: Option<anyhow::Error> = None;
@@ -34,7 +37,8 @@ pub fn update_project(
     }
 
     if config.compose.up {
-        match ensure_running(project, &base, dry_run, verbose)? {
+        match ensure_running(project, &base, dry_run)? {
+            // 探测用的 ps 一定会执行，不需要在 verbose 下重复打印。
             UpDecision::Proceed => {
                 let mut args = base;
                 args.push("up".to_string());
@@ -72,23 +76,18 @@ enum UpDecision {
 /// 先 `ps -q` 拿到项目名下的容器 ID：一个都没有就是「不存在」；
 /// 再 `ps --status running -q` 拿到运行中的容器：为空就是「已停止」。
 /// 只凭 ID 数量比较，不依赖 `docker inspect` 的文本解析。
-fn ensure_running(
-    project: &ComposeProject,
-    base: &[String],
-    dry_run: bool,
-    verbose: bool,
-) -> Result<UpDecision> {
+fn ensure_running(project: &ComposeProject, base: &[String], dry_run: bool) -> Result<UpDecision> {
     if dry_run {
-        let shown = probe_args(base, &["ps", "-q"]).join(" ");
+        let shown = display(&project.dir, base, &["ps", "-q"]);
         println!("  [dry-run] {shown}  # 检查容器是否存在且正在运行");
         return Ok(UpDecision::Proceed);
     }
 
-    let all = probe_ids(project, base, &["ps", "-q"], verbose)?;
+    let all = probe_ids(project, base, &["ps", "-q"])?;
     if all.is_empty() {
         return Ok(UpDecision::Skip("容器不存在".to_string()));
     }
-    let running = probe_ids(project, base, &["ps", "--status", "running", "-q"], verbose)?;
+    let running = probe_ids(project, base, &["ps", "--status=running", "-q"])?;
     if running.is_empty() {
         return Ok(UpDecision::Skip("容器已停止".to_string()));
     }
@@ -96,22 +95,17 @@ fn ensure_running(
 }
 
 /// 用 compose 的 `ps` 子命令列出容器 ID。
-fn probe_ids(
-    project: &ComposeProject,
-    base: &[String],
-    sub: &[&str],
-    verbose: bool,
-) -> Result<Vec<String>> {
+fn probe_ids(project: &ComposeProject, base: &[String], sub: &[&str]) -> Result<Vec<String>> {
     let args = probe_args(base, sub);
+    let shown = display(&project.dir, base, sub);
     let (program, rest) = args.split_first().context("命令不能为空")?;
-    let shown = args.join(" ");
-    if verbose {
-        println!("  $ {shown}");
-    }
+    println!("  $ {shown}");
 
     let output = Command::new(program)
         .args(rest)
+        // 与 pull/up 保持一致：compose 命令一律在 compose 文件所在目录执行。
         .current_dir(&project.dir)
+        .env("PWD", &project.dir)
         .output()
         .with_context(|| format!("无法执行 `{shown}`，请确认已安装 {program}"))?;
     if !output.status.success() {
@@ -136,6 +130,18 @@ fn probe_args(base: &[String], sub: &[&str]) -> Vec<String> {
     let mut args = base.to_vec();
     args.extend(sub.iter().map(|s| s.to_string()));
     args
+}
+
+/// 拼出带工作目录前缀的展示命令，如 `(cwd=/opt/stacks/nginx) docker compose ps -q`。
+///
+/// 日志里只看到 `docker compose ps -q` 无法判断在哪个目录执行，
+/// 而目录正是决定「compose 项目是哪一个」的关键，所以统一打印出来。
+fn display(dir: &Path, base: &[String], sub: &[&str]) -> String {
+    format!(
+        "(cwd={}) {}",
+        dir.display(),
+        probe_args(base, sub).join(" ")
+    )
 }
 
 /// 清理悬空镜像，整个流程结束后只调用一次。
@@ -170,7 +176,7 @@ pub fn prune(config: &Config, dry_run: bool, verbose: bool) -> Result<()> {
 
 fn run(args: &[String], project: &ComposeProject, dry_run: bool, verbose: bool) -> Result<()> {
     let (program, rest) = args.split_first().context("命令不能为空")?;
-    let shown = args.join(" ");
+    let shown = format!("(cwd={}) {}", project.dir.display(), args.join(" "));
     if dry_run {
         println!("  [dry-run] {shown}");
         return Ok(());
@@ -183,6 +189,8 @@ fn run(args: &[String], project: &ComposeProject, dry_run: bool, verbose: bool) 
         .args(rest)
         // compose 会读取当前目录的 .env 等文件，因此切换到 compose 文件所在目录执行。
         .current_dir(&project.dir)
+        // 显式设置工作目录，兼容自身未做该处理的 compose 实现（如 `docker-compose`）。
+        .env("PWD", &project.dir)
         .output()
         .with_context(|| format!("无法执行 `{shown}`，请确认已安装 {program}"))?;
 
