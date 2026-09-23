@@ -1,0 +1,48 @@
+# docker-container-update 示例配置
+#
+# 所有配置项都可以用环境变量覆盖，规则是 DCU_ 前缀 + 配置路径的大写下划线形式：
+#   DCU_COMPOSE_DIR=/opt/stacks
+#   DCU_COMPOSE_MAX_DEPTH=3
+#   DCU_WHITELIST_ENABLE=true
+#   DCU_WHITELIST_DIRS=nginx/api,nginx/web
+# 列表用英文逗号分隔。
+
+compose:
+  # docker-compose 文件所在目录；相对路径按「程序所在目录」解析
+  dir: /opt/stacks
+  # 递归扫描的最大层级，0 表示只扫描 dir 本身，默认最多 2 层
+  max_depth: 2
+  # 视为 compose 文件的文件名，按顺序优先匹配
+  file_names:
+    - docker-compose.yml
+    - docker-compose.yaml
+    - compose.yml
+    - compose.yaml
+  # compose 命令，可换成 `docker-compose`；带子命令时一并写上
+  command: docker compose
+  # 是否执行 pull
+  pull: true
+  # 是否执行 up -d
+  up: true
+  # up 时是否附带 --remove-orphans
+  remove_orphans: true
+  # 全部更新完成后是否执行 docker image prune -f
+  prune: false
+  # 追加到 up 之后的额外参数
+  up_args: []
+
+# 白名单：enable 为 true 时「只扫描」命中的目录
+whitelist:
+  # 是否启用白名单
+  enable: false
+  # 目录模式，相对 compose.dir 书写；单段名字表示任意层级的同名目录，
+  # 支持 * 与 **，如 [nginx, apps/*, stacks/**/prod]
+  dirs: []
+
+# 黑名单：enable 为 true 时扫描「除命中目录之外」的其他目录
+blacklist:
+  # 是否启用黑名单
+  enable: true
+  # 目录模式，相对 compose.dir 书写，写法同白名单
+  dirs:
+    - legacy

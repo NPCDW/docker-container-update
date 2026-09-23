@@ -1,0 +1,26 @@
+main:
+  push:
+    - name: build
+      docker:
+        image: rust:1.85-slim
+      stages:
+        - name: fmt
+          script: cargo fmt --check
+        - name: clippy
+          script: cargo clippy --all-targets -- -D warnings
+        - name: test
+          script: cargo test
+        - name: release
+          script: cargo build --release
+
+  pull_request:
+    - name: check
+      docker:
+        image: rust:1.85-slim
+      stages:
+        - name: fmt
+          script: cargo fmt --check
+        - name: clippy
+          script: cargo clippy --all-targets -- -D warnings
+        - name: test
+          script: cargo test
