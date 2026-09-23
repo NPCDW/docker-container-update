@@ -1,10 +1,13 @@
 services:
-  postman-backup:
+  docker-container-update:
     image: npcdw/docker-container-update
     container_name: docker-container-update
+    restart: unless-stopped
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
       - "/usr/local/soft:/usr/local/soft"
+      # 想改定时时间：挂载自定义 crontab 覆盖镜像内置的那份
+      # - "./crontab:/etc/docker-container-update.crontab:ro"
     environment:
       TZ: 'Asia/Shanghai'
       LANG: 'C.UTF-8'

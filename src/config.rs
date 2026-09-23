@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::env::Scope;
 
 /// 默认配置文件名，位于可执行文件同目录。
-pub const DEFAULT_CONFIG_FILE: &str = "dcu.yaml";
+pub const DEFAULT_CONFIG_FILE: &str = "docker-container-update.yaml";
 
 /// 顶层配置。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
