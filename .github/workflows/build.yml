@@ -15,34 +15,36 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        build: [linux, macos, windows]
         include:
           - build: linux
             os: ubuntu-latest
-            rust: stable
-            target: x86_64-unknown-linux-gnu
+            rust_target: x86_64-unknown-linux-gnu
             archive-name: docker-container-update-${{ github.ref_name }}-linux-amd64.tar.gz
+          - build: linux-arm
+            os: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            archive-name: docker-container-update-${{ github.ref_name }}-linux-arm64.tar.gz
     steps:
     - uses: actions/checkout@v4
     - name: Install Rust
       uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
         toolchain: ${{ matrix.rust }}
-        target: ${{ matrix.target }}
+        target: ${{ matrix.rust_target }}
     - name: Build
-      run: cargo build --verbose --release --target ${{ matrix.target }}
+      run: cargo build --verbose --release --target ${{ matrix.rust_target }}
       env:
         RUST_BACKTRACE: 1
     - name: Strip binary (linux and macos)
       if: matrix.build == 'linux' || matrix.build == 'macos'
-      run: strip "target/${{ matrix.target }}/release/docker-container-update"
+      run: strip "target/${{ matrix.rust_target }}/release/docker-container-update"
     - name: Build archive
       shell: bash
       run: |
         mkdir archive
         cp LICENSE README.md archive/
         cd archive
-        cp "../target/${{ matrix.target }}/release/docker-container-update" ./
+        cp "../target/${{ matrix.rust_target }}/release/docker-container-update" ./
         tar -czf "${{ matrix.archive-name }}" LICENSE README.md docker-container-update
     - name: Release
       uses: softprops/action-gh-release@v1
@@ -67,7 +69,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             npcdw/docker-container-update:${{ github.ref_name }}
