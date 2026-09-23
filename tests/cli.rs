@@ -30,6 +30,17 @@ fn setup() -> (TempDir, PathBuf, PathBuf) {
     (root, bindir, stacks)
 }
 
+/// 在已有 compose 文件的目录里再造一个子目录与子 compose 文件，
+/// 用于验证「目录已有 compose 文件时不再扫描下一级目录」。
+fn nest_inside_stack(stacks: &Path) {
+    fs::create_dir_all(stacks.join("db/backup")).unwrap();
+    fs::write(
+        stacks.join("db/backup/docker-compose.yml"),
+        "services: {}\n",
+    )
+    .unwrap();
+}
+
 /// 调用被测二进制；工作目录交给调用方通过 env 控制。
 fn run(bindir: &Path, args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
     let exe = env!("CARGO_BIN_EXE_dcu");
@@ -169,4 +180,34 @@ fn config_subcommand_reflects_env() {
     assert_eq!(code, 0);
     assert!(stdout.contains("max_depth: 5"), "{stdout}");
     assert!(stdout.contains("pull: false"), "{stdout}");
+}
+
+#[test]
+fn does_not_descend_into_existing_stack() {
+    let (_root, bindir, stacks) = setup();
+    nest_inside_stack(&stacks);
+    write_config(&bindir, &stacks, "");
+    let (code, stdout, stderr) = run(&bindir, &["list"], &[]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout.contains("db/docker-compose.yml"),
+        "栈根项目本身仍应被扫描: {stdout}"
+    );
+    assert!(
+        !stdout.contains("db/backup/docker-compose.yml"),
+        "栈内部子目录不应被扫描: {stdout}"
+    );
+}
+
+#[test]
+fn descends_when_directory_has_no_compose_file() {
+    let (_root, bindir, stacks) = setup();
+    nest_inside_stack(&stacks);
+    // 把 db 的 compose 文件换成不认识的扩展名，db 就不再是栈根，
+    // 此时应当继续下探到 db/backup。
+    fs::remove_file(stacks.join("db/docker-compose.yml")).unwrap();
+    write_config(&bindir, &stacks, "");
+    let (code, stdout, _) = run(&bindir, &["list"], &[]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("db/backup/docker-compose.yml"), "{stdout}");
 }

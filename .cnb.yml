@@ -4,6 +4,9 @@ main:
       docker:
         image: rust:1.85-slim
       stages:
+        - name: prepare
+          script: |
+            rustup component add rustfmt clippy
         - name: fmt
           script: cargo fmt --check
         - name: clippy
@@ -18,6 +21,9 @@ main:
       docker:
         image: rust:1.85-slim
       stages:
+        - name: prepare
+          script: |
+            rustup component add rustfmt clippy
         - name: fmt
           script: cargo fmt --check
         - name: clippy

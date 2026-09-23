@@ -39,7 +39,7 @@ pub struct ComposeConfig {
     pub command: String,
     /// 是否执行 pull
     pub pull: bool,
-    /// 是否执行 up -d
+    /// 是否执行 up -d；仅在容器存在且正在运行时才执行
     pub up: bool,
     /// up 时是否附带 --remove-orphans
     pub remove_orphans: bool,
@@ -436,7 +436,8 @@ pub fn default_config_template() -> &'static str {
 compose:
   # docker-compose 文件所在目录；相对路径按「程序所在目录」解析
   dir: .
-  # 递归扫描的最大层级，0 表示只扫描 dir 本身，默认最多 2 层
+  # 递归扫描的最大层级，0 表示只扫描 dir 本身，默认最多 2 层；
+  # 目录里一旦出现 compose 文件就视为栈根，不再扫描它的下一级目录
   max_depth: 2
   # 视为 compose 文件的文件名，按顺序优先匹配
   file_names:
@@ -452,7 +453,8 @@ compose:
   command: docker compose
   # 是否执行 pull
   pull: true
-  # 是否执行 up -d
+  # 是否执行 up -d；仅在容器「存在且正在运行」时才执行，
+  # 容器不存在或已停止时跳过 up，只做 pull
   up: true
   # up 时是否附带 --remove-orphans
   remove_orphans: true

@@ -80,9 +80,12 @@ fn walk(
     if !seen.insert(dir.to_path_buf()) {
         return Ok(());
     }
+    // 当前目录已有 compose 文件时，它就是这一棵子树的栈根，
+    // 不再往下扫描，避免把栈内部用于管理数据的 compose 文件也当成项目。
+    let has_compose = detect_compose_file(dir, config).is_some();
     out.push(dir.to_path_buf());
 
-    if depth >= config.compose.max_depth {
+    if has_compose || depth >= config.compose.max_depth {
         return Ok(());
     }
 
@@ -114,15 +117,17 @@ fn walk(
     Ok(())
 }
 
-/// 在目录中按 `file_names` 的顺序找出第一个存在的 compose 文件。
-fn detect_compose(dir: PathBuf, config: &Config) -> Option<ComposeProject> {
+/// 在目录中按 `file_names` 的顺序找出第一个存在的 compose 文件名。
+fn detect_compose_file(dir: &Path, config: &Config) -> Option<String> {
     config
         .compose
         .file_names
         .iter()
         .find(|file| dir.join(file).is_file())
-        .map(|file| ComposeProject {
-            dir,
-            file: file.clone(),
-        })
+        .cloned()
+}
+
+/// 把候选目录组装成 compose 项目。
+fn detect_compose(dir: PathBuf, config: &Config) -> Option<ComposeProject> {
+    detect_compose_file(&dir, config).map(|file| ComposeProject { dir, file })
 }
