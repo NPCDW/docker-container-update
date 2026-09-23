@@ -1,7 +1,7 @@
 [package]
 name = "docker-container-update"
-version = "0.1.0"
-edition = "2021"
+version = "0.2.0"
+edition = "2024"
 # 依赖（clap 4.6 / indexmap 2）要求 1.85+
 rust-version = "1.85"
 description = "扫描指定目录下的 docker-compose 文件，并对容器执行更新"
