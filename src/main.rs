@@ -22,7 +22,7 @@ use crate::scanner::ComposeProject;
     name = "docker-container-update",
     version,
     about = "扫描 docker-compose 目录并更新容器",
-    long_about = "递归扫描指定目录下的 docker-compose 文件，对每个项目执行 docker compose pull 与 up -d。\n工作目录固定为程序自身所在目录，与在哪个路径调用无关。"
+    long_about = "递归扫描指定目录下的 docker-compose 文件，对每个项目执行 docker compose pull 与 up -d。\n配置与扫描目录固定相对程序自身所在目录解析，与在哪个路径调用无关。"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -68,7 +68,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<ExitCode> {
     let cli = Cli::parse();
-    // 工作目录固定为程序所在目录，保证从任意位置调用行为一致。
+    // 配置与扫描目录相对程序所在目录解析，保证从任意位置调用行为一致。
     let workdir = exe_dir()?;
     let config_path = cli
         .config

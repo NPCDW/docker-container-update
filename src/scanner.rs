@@ -17,12 +17,9 @@ pub struct ComposeProject {
 }
 
 impl ComposeProject {
-    /// 组装 `-f` 参数；使用 compose 自己的默认文件名时无需显式指定。
-    pub fn file_args(&self) -> Vec<String> {
-        if self.file == "docker-compose.yml" || self.file == "compose.yaml" {
-            return Vec::new();
-        }
-        vec!["-f".to_string(), self.file.clone()]
+    /// compose 文件路径（绝对路径），也就是运行 compose 命令时的工作目录下的文件名。
+    pub fn file_path(&self) -> PathBuf {
+        self.dir.join(&self.file)
     }
 
     /// 展示用路径；`base` 非空时显示相对 `base` 的路径。
