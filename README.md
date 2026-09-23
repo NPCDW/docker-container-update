@@ -14,6 +14,7 @@
 - **安全更新**：执行 `up -d` 前先确认容器「存在且正在运行」，容器不存在或已停止时跳过 `up`；
   `pull` 没拉到新内容时也跳过 `up`。
 - **`--dry-run`**：只打印将要执行的命令，不实际执行。
+- **前后置钩子**：`compose.pre_command` 在更新前、`compose.post_command` 在更新后执行自定义 shell 命令。
 
 ## 安装
 
@@ -108,6 +109,10 @@ compose:
   prune: false
   # 追加到 up 之后的额外参数
   up_args: []
+  # 扫描开始前执行的 shell 命令（用 /bin/sh -c 执行），留空表示不执行
+  pre_command: ''
+  # 更新完成后执行的 shell 命令，留空表示不执行
+  post_command: ''
 
 # 白名单：enable 为 true 时「只扫描」命中的目录
 whitelist:
@@ -159,6 +164,7 @@ DCU_COMPOSE_DIR=/opt/stacks
 DCU_COMPOSE_MAX_DEPTH=3
 DCU_COMPOSE_PULL=false
 DCU_COMPOSE_UP_ARGS='--wait,--quiet-pull'
+DCU_COMPOSE_PRE_COMMAND='./backup.sh'
 DCU_WHITELIST_ENABLE=true
 DCU_WHITELIST_DIRS=nginx/api,nginx/web
 ```
@@ -174,6 +180,8 @@ DCU_WHITELIST_DIRS=nginx/api,nginx/web
 | `DCU_COMPOSE_REMOVE_ORPHANS` | `compose.remove_orphans` |
 | `DCU_COMPOSE_PRUNE` | `compose.prune` |
 | `DCU_COMPOSE_UP_ARGS` | `compose.up_args` |
+| `DCU_COMPOSE_PRE_COMMAND` | `compose.pre_command` |
+| `DCU_COMPOSE_POST_COMMAND` | `compose.post_command` |
 | `DCU_WHITELIST_ENABLE` | `whitelist.enable` |
 | `DCU_WHITELIST_DIRS` | `whitelist.dirs` |
 | `DCU_BLACKLIST_ENABLE` | `blacklist.enable` |
@@ -201,6 +209,32 @@ DCU_WHITELIST_DIRS=nginx/api,nginx/web
   跳过时打印 `跳过 up: 容器不存在` / `跳过 up: 容器已停止`，且不算失败。
   这样只更新「本来就在跑」的容器，不会把人为停掉的、或从未部署过的容器悄悄拉起来。
 - 任意一个项目失败，进程以非 0 退出码结束，并继续处理其余项目。
+
+### 前后置钩子
+
+`compose.pre_command` 与 `compose.post_command` 是给单个项目加的自定义 shell 命令，
+适合「更新前备份数据卷」「更新后清理旧镜像」这类 compose 本身管不到的动作。
+
+- **执行方式**：`/bin/sh -c <命令>`，可以用管道、`&&` 等 shell 语法；
+  工作目录与 `PWD` 都是该项目的 compose 文件所在目录，与 `pull` / `up` 一致。
+- **执行时机**：
+  1. `pre_command`（扫描前）→ `pull` → 容器状态检查 → `up -d` → `post_command`（更新完成后）；
+  2. `pre_command` 必须成功，`pull` 与 `up` 才会执行 —— 前置命令失败说明依赖没准备好，
+     继续拉镜像并重建容器只会得到一个起不来的栈；
+  3. `post_command` 无论前面成功还是失败都会执行，保证收尾动作不被跳过。
+- **失败处理**：失败与非 0 退出码都算项目失败，命令输出照常打印；
+  `pre_command` / `post_command` 自带日志，可以在命令里把输出重定向到文件。
+- **`--dry-run`**：只打印命令，包括 `[dry-run]` 前缀与工作目录，不实际执行。
+
+```yaml
+compose:
+  # 更新前先把数据目录打包备份
+  pre_command: 'tar czf /backup/$(basename $PWD)-$(date +%F).tgz data/'
+  # 更新后删掉本次替换下来的旧镜像，并打一行日志
+  post_command: 'docker image prune -f >/dev/null && echo "$(basename $PWD) 更新完成"'
+```
+
+钩子按项目执行，不是整轮执行一次；多个项目会各跑一遍。
 
 ## 开发
 

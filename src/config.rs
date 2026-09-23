@@ -47,6 +47,10 @@ pub struct ComposeConfig {
     pub prune: bool,
     /// 追加到 up 之后的额外参数
     pub up_args: Vec<String>,
+    /// 扫描开始前执行的 shell 命令，每个项目执行一次
+    pub pre_command: String,
+    /// 该项目的更新流程结束后执行的 shell 命令
+    pub post_command: String,
 
     /// `dir` 解析后的绝对路径，由 `resolve_paths` 填充，不参与序列化
     #[serde(skip)]
@@ -83,6 +87,8 @@ impl Default for ComposeConfig {
             remove_orphans: true,
             prune: false,
             up_args: Vec::new(),
+            pre_command: String::new(),
+            post_command: String::new(),
             base_dir: PathBuf::new(),
         }
     }
@@ -96,6 +102,31 @@ impl ComposeConfig {
             .map(|s| s.to_string())
             .collect()
     }
+
+    /// 把 `pre_command` 转换成可执行的参数前缀（`/bin/sh -c <命令>`）。
+    ///
+    /// 空命令返回 `None`，表示不执行。
+    pub fn pre_args(&self) -> Option<Vec<String>> {
+        shell_args(&self.pre_command)
+    }
+
+    /// 把 `post_command` 转换成可执行的参数前缀；空命令返回 `None`。
+    pub fn post_args(&self) -> Option<Vec<String>> {
+        shell_args(&self.post_command)
+    }
+}
+
+/// 包装成 `/bin/sh -c <命令>`；命令为空或全是空白时返回 `None`。
+fn shell_args(command: &str) -> Option<Vec<String>> {
+    let command = command.trim();
+    if command.is_empty() {
+        return None;
+    }
+    Some(vec![
+        "/bin/sh".to_string(),
+        "-c".to_string(),
+        command.to_string(),
+    ])
 }
 
 impl Config {
@@ -378,6 +409,13 @@ pub fn apply_env(config: &mut Config) {
     if let Some(v) = compose.list("up_args") {
         config.compose.up_args = v;
     }
+    // 空值表示「不执行」，所以用 string（会过滤空白）而不是原始读取。
+    if let Some(v) = compose.string("pre_command") {
+        config.compose.pre_command = v;
+    }
+    if let Some(v) = compose.string("post_command") {
+        config.compose.post_command = v;
+    }
 
     for (key, target) in [
         ("whitelist", &mut config.whitelist),
@@ -462,6 +500,12 @@ compose:
   prune: false
   # 追加到 up 之后的额外参数，如 ["--wait"]
   up_args: []
+  # 扫描开始前执行的 shell 命令（用 /bin/sh -c 执行），工作目录是各项目的 compose
+  # 文件所在目录；留空表示不执行
+  pre_command: ''
+  # 该项目的更新流程结束后执行的 shell 命令，执行条件与工作目录同 pre_command；
+  # 留空表示不执行
+  post_command: ''
 
 # 白名单：enable 为 true 时「只扫描」命中的目录
 whitelist:
