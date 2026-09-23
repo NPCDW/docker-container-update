@@ -1,32 +1,17 @@
-main:
+$:
+  vscode:
+    - docker:
+        image: docker.cnb.cool/my-codespace/dev-image-build/rust:latest
+      services:
+        - vscode
+        - docker
   push:
-    - name: build
-      docker:
-        image: rust:1.85-slim
+    - imports: https://cnb.cool/my-codespace/envs/-/blob/main/github-secret.yml
       stages:
-        - name: prepare
-          script: |
-            rustup component add rustfmt clippy
-        - name: fmt
-          script: cargo fmt --check
-        - name: clippy
-          script: cargo clippy --all-targets -- -D warnings
-        - name: test
-          script: cargo test
-        - name: release
-          script: cargo build --release
-
-  pull_request:
-    - name: check
-      docker:
-        image: rust:1.85-slim
-      stages:
-        - name: prepare
-          script: |
-            rustup component add rustfmt clippy
-        - name: fmt
-          script: cargo fmt --check
-        - name: clippy
-          script: cargo clippy --all-targets -- -D warnings
-        - name: test
-          script: cargo test
+        - name: sync to github
+          image: tencentcom/git-sync
+          settings:
+            target_url: https://github.com/NPCDW/docker-container-update.git
+            auth_type: https
+            username: ${GITHUB_USERNAME}
+            password: ${GITHUB_ACCESS_TOKEN}
