@@ -6,6 +6,7 @@ services:
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock"
       - "/usr/local/soft:/usr/local/soft"
+      - "./docker-container-update.yaml:/docker-container-update/docker-container-update.yaml"
       # 想改定时时间：挂载自定义 crontab 覆盖镜像内置的那份
       # - "./crontab:/etc/docker-container-update.crontab:ro"
     environment:
