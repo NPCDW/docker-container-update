@@ -12,5 +12,6 @@ RUN cargo build --release
 FROM docker:cli
 
 WORKDIR /docker-container-update
-COPY --from=rust-build /usr/src/docker-container-update/target/release/dcu /usr/local/bin/dcu
+COPY --from=rust-build /usr/src/docker-container-update/target/release/dcu /docker-container-update/dcu
+RUN ln -s /docker-container-update/dcu /usr/local/bin/dcu 
 CMD dcu
