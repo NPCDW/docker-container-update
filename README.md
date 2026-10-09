@@ -13,8 +13,9 @@
 - **支持 `*` 与 `**` 通配**：如 `nginx/*`、`stacks/**/prod`。
 - **安全更新**：执行 `up -d` 前先确认容器「存在且正在运行」，容器不存在或已停止时跳过 `up`；
   `pull` 没拉到新内容时也跳过 `up`。
+- **命令全量回显**：每条被调用的命令都在执行前以 `+ 用户名@主机名:目录名$ 命令` 打印。
 - **`--dry-run`**：只打印将要执行的命令，不实际执行。
-- **前后置钩子**：`compose.pre_command` 在更新前、`compose.post_command` 在更新后执行自定义 shell 命令。
+- **全局前后置钩子**：`compose.pre_command` 在整个程序启动前、`compose.post_command` 在整个程序执行完成后各执行一次自定义 shell 命令。
 
 ## 安装
 
@@ -109,9 +110,11 @@ compose:
   prune: false
   # 追加到 up 之后的额外参数
   up_args: []
-  # 扫描开始前执行的 shell 命令（用 /bin/sh -c 执行），留空表示不执行
+  # 整个程序启动前执行的 shell 命令（用 /bin/sh -c 执行），整轮只执行一次；
+  # 留空表示不执行
   pre_command: ''
-  # 更新完成后执行的 shell 命令，留空表示不执行
+  # 整个程序执行完成后执行的 shell 命令，整轮只执行一次，成功失败都会执行；
+  # 留空表示不执行
   post_command: ''
 
 # 白名单：enable 为 true 时「只扫描」命中的目录
@@ -195,7 +198,15 @@ DCU_WHITELIST_DIRS=nginx/api,nginx/web
   命令的工作目录一律是 compose 文件所在目录（这样 `.env` 才会被读取），
   同时把 `PWD` 环境变量也设为该目录，兼容自身不做该处理的 compose 实现（如 `docker-compose`）。
 - 命令统一带 `-f <compose 文件绝对路径>`，文件名不是默认值时同样成立。
-- `-v` 与 `--dry-run` 打印的命令都带 `(cwd=<目录>)` 前缀，便于确认工作目录。
+- **每条被调用的命令都在调用前回显**，格式仿 shell 提示符：
+
+  ```
+  + 用户名@主机名:目录名$ docker compose -f /opt/stacks/nginx/docker-compose.yml pull
+  ```
+
+  用户名取 `USER` / `LOGNAME`（缺失时退回真实 UID），主机名取 `/proc/sys/kernel/hostname`
+  （取不到时退回 `HOSTNAME`），目录名是该命令实际执行的工作目录的最后一段。
+  普通日志照常打印，`-v` 只额外控制命令输出内容。
 - **`pull` 没拉到新内容就跳过 `up`**：对比 `pull` 的输出，若只是 `Image is up to date` /
   各层 `Already exists`（本地镜像已是最新），说明没有任何更新，`up -d` 只会空跑，直接跳过。
   跳过时打印 `跳过 up: pull 未拉取到新内容`，且不算失败。
@@ -212,29 +223,28 @@ DCU_WHITELIST_DIRS=nginx/api,nginx/web
 
 ### 前后置钩子
 
-`compose.pre_command` 与 `compose.post_command` 是给单个项目加的自定义 shell 命令，
-适合「更新前备份数据卷」「更新后清理旧镜像」这类 compose 本身管不到的动作。
+`compose.pre_command` 与 `compose.post_command` 是给**整个程序**加的自定义 shell 命令，
+适合「本轮更新前统一备份数据卷」「全部更新完统一清理旧镜像 / 发通知」这类动作。
 
 - **执行方式**：`/bin/sh -c <命令>`，可以用管道、`&&` 等 shell 语法；
-  工作目录与 `PWD` 都是该项目的 compose 文件所在目录，与 `pull` / `up` 一致。
-- **执行时机**：
-  1. `pre_command`（扫描前）→ `pull` → 容器状态检查 → `up -d` → `post_command`（更新完成后）；
-  2. `pre_command` 必须成功，`pull` 与 `up` 才会执行 —— 前置命令失败说明依赖没准备好，
+  工作目录与 `PWD` 都是程序所在目录，与配置文件、相对路径的解析基准一致。
+- **执行时机**（整轮各执行一次，与扫到几个项目无关）：
+  1. `pre_command`（整个程序启动前）→ 扫描 → 逐个 `pull` / `up -d` → `prune` → `post_command`（整个程序执行完成后）；
+  2. `pre_command` 必须成功，扫描与更新才会执行 —— 前置命令失败说明依赖没准备好，
      继续拉镜像并重建容器只会得到一个起不来的栈；
   3. `post_command` 无论前面成功还是失败都会执行，保证收尾动作不被跳过。
-- **失败处理**：失败与非 0 退出码都算项目失败，命令输出照常打印；
-  `pre_command` / `post_command` 自带日志，可以在命令里把输出重定向到文件。
-- **`--dry-run`**：只打印命令，包括 `[dry-run]` 前缀与工作目录，不实际执行。
+- **失败处理**：失败与非 0 退出码都算失败，命令输出照常打印；
+  钩子自带日志，可以在命令里把输出重定向到文件。
+- **`--dry-run`**：只回显命令，不实际执行。
+- 只对 `update`（默认行为）生效；`list` / `config` / `--init` 这些只读子命令不会触发钩子。
 
 ```yaml
 compose:
-  # 更新前先把数据目录打包备份
-  pre_command: 'tar czf /backup/$(basename $PWD)-$(date +%F).tgz data/'
-  # 更新后删掉本次替换下来的旧镜像，并打一行日志
-  post_command: 'docker image prune -f >/dev/null && echo "$(basename $PWD) 更新完成"'
+  # 本轮更新前把数据目录整体备份一次
+  pre_command: 'tar czf /backup/stacks-$(date +%F).tgz /opt/stacks/data'
+  # 全部更新完删掉悬空镜像，并打一行日志
+  post_command: 'docker image prune -f >/dev/null && echo "本轮更新完成"'
 ```
-
-钩子按项目执行，不是整轮执行一次；多个项目会各跑一遍。
 
 ## 开发
 

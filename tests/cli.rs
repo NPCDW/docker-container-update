@@ -276,14 +276,54 @@ fn calls(stdout: &str) -> Vec<Call> {
     calls
 }
 
-/// 从 verbose 日志里取出 `$ (cwd=...) <命令>` 行。
+/// 从日志里取出 `+ 用户@主机:目录名$ <命令>` 形式的命令回显。
 fn shown_commands(stdout: &str) -> Vec<String> {
     stdout
         .lines()
-        .map(|line| line.trim_start())
-        .filter(|line| line.starts_with("$ "))
+        .filter(|line| line.starts_with("+ "))
         .map(|line| line.trim_end().to_string())
         .collect()
+}
+
+/// 校验一条回显符合 `+ 用户名@主机名:目录名$ 命令` 的格式，返回其中的命令部分。
+///
+/// 用户名与主机名依运行环境而异，只断言结构；`dir_name` 给定时一并校验目录名。
+fn traced_command(line: &str, dir_name: Option<&str>) -> String {
+    let rest = line
+        .strip_prefix("+ ")
+        .unwrap_or_else(|| panic!("回显应以 `+ ` 开头: {line}"));
+    let (head, command) = rest
+        .split_once("$ ")
+        .unwrap_or_else(|| panic!("回显应包含 `$ ` 分隔符: {line}"));
+    let (user, host_dir) = head
+        .split_once('@')
+        .unwrap_or_else(|| panic!("回显应包含 `@` 分隔符: {line}"));
+    assert!(!user.is_empty(), "用户名不应为空: {line}");
+    let (host, dir) = host_dir
+        .rsplit_once(':')
+        .unwrap_or_else(|| panic!("回显应包含 `:` 分隔符: {line}"));
+    assert!(!host.is_empty(), "主机名不应为空: {line}");
+    assert!(!dir.is_empty(), "目录名不应为空: {line}");
+    if let Some(expected) = dir_name {
+        assert_eq!(dir, expected, "目录名应是工作目录的最后一段: {line}");
+    }
+    assert!(!command.is_empty(), "命令不应为空: {line}");
+    command.to_string()
+}
+
+/// `trace` 回显里的目录名：路径的最后一段。
+fn dir_name(dir: &Path) -> String {
+    dir.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| dir.display().to_string())
+}
+
+/// 程序所在目录，也就是钩子的工作目录。
+fn exe_dir() -> PathBuf {
+    Path::new(env!("CARGO_BIN_EXE_docker-container-update"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 /// `docker compose` 命令必须带绝对 `-f`，且在 compose 文件所在目录执行。
@@ -330,22 +370,95 @@ fn compose_runs_in_compose_file_directory() {
         "拉到了新镜像且容器在运行，应当 pull + up: {stdout}"
     );
 
-    // verbose 日志覆盖全部三类命令，且都带绝对 -f 与 (cwd=...) 前缀。
-    let shown = shown_commands(&stdout).join("\n");
-    for sub in ["pull", "-f", "ps --all -q", "ps --status=running -q"] {
-        assert!(shown.contains(sub), "日志应包含 {sub}: {stdout}");
+    // 日志无差别回显全部调用命令，格式为 `+ 用户@主机:目录名$ 命令`。
+    let commands = shown_commands(&stdout)
+        .iter()
+        .map(|line| traced_command(line, None))
+        .collect::<Vec<_>>();
+    let api_commands = commands
+        .iter()
+        .filter(|c| c.contains(&format!("-f {}", api_file.display())))
+        .collect::<Vec<_>>();
+    for sub in ["pull", "ps --all -q", "ps --status=running -q", "up -d"] {
+        assert!(
+            api_commands.iter().any(|c| c.contains(sub)),
+            "回显应包含 {sub}: {stdout}"
+        );
     }
-    assert!(!shown.contains("cwd=/\n"), "工作目录不应是根目录: {stdout}");
-    let marker = format!("-f {}", api_file.display());
-    assert!(
-        shown.matches(&marker).count() >= 3,
-        "每条命令都应带绝对 -f: {stdout}"
+    assert_eq!(
+        api_commands.len(),
+        4,
+        "pull / 两次 ps / up 共 4 条命令都应回显: {stdout}"
     );
-    let cwd_marker = format!("(cwd={})", api_dir.display());
-    assert!(
-        shown.matches(&cwd_marker).count() >= 3,
-        "每条命令都应打印工作目录: {stdout}"
+    // 回显里的目录名要和工作目录一致，否则看不出命令跑在哪。
+    let api_trace = shown_commands(&stdout)
+        .into_iter()
+        .filter(|line| line.contains(&format!("-f {}", api_file.display())))
+        .collect::<Vec<_>>();
+    for line in &api_trace {
+        traced_command(line, Some("api"));
+    }
+}
+
+/// 所有被调用的命令都要在调用前回显，格式为 `+ 用户名@主机名:目录名$ 命令`。
+///
+/// 用户名用 `USER` 环境变量固定，主机名依运行环境而异故只断言结构。
+#[test]
+fn every_command_is_echoed_in_prompt_style() {
+    let (_root, bindir, stacks) = setup();
+    write_config(
+        &bindir,
+        &stacks,
+        "  pre_command: 'true'\n  post_command: 'true'\n",
     );
+    let fake = fake_compose(&bindir, true);
+    let script = fake.display().to_string();
+
+    let (code, stdout, stderr) = run(
+        &bindir,
+        &[],
+        &[
+            ("DCU_COMPOSE_COMMAND", fake.to_str().unwrap()),
+            ("DCU_WHITELIST_ENABLE", "true"),
+            ("DCU_WHITELIST_DIRS", "nginx/api"),
+            ("USER", "tester"),
+            ("HOSTNAME", "testhost"),
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}");
+
+    let api_file = stacks
+        .join("nginx/api/docker-compose.yml")
+        .display()
+        .to_string();
+
+    let lines = shown_commands(&stdout);
+    // 每条命令都带 `+ 用户名@主机名:目录名$ ` 前缀。
+    // 用户名取 USER，主机名以 /proc 的值为准，因此只断言用户名部分。
+    assert!(
+        lines.iter().all(|line| line.starts_with("+ tester@")),
+        "回显应以 `+ 用户名@` 开头: {stdout}"
+    );
+    let commands = lines
+        .iter()
+        .map(|line| traced_command(line, None))
+        .collect::<Vec<_>>();
+    assert!(
+        commands.first().unwrap().contains("/bin/sh -c true"),
+        "第一条应是 pre_command: {stdout}"
+    );
+    assert!(
+        commands.last().unwrap().contains("/bin/sh -c true"),
+        "最后一条应是 post_command: {stdout}"
+    );
+    for sub in ["pull", "ps --all -q", "up -d"] {
+        assert!(
+            commands
+                .iter()
+                .any(|c| c.starts_with(&script) && c.contains(sub) && c.contains(&api_file)),
+            "回显应包含 `{script} -f {api_file} {sub}`: {stdout}"
+        );
+    }
 }
 
 /// dry-run 只打印，但打印出的命令要能看出工作目录。
@@ -364,9 +477,24 @@ fn dry_run_shows_working_directory() {
         ],
     );
     assert_eq!(code, 0, "{stderr}");
+    let shown = shown_commands(&stdout);
+    assert!(!shown.is_empty(), "dry-run 应回显命令: {stdout}");
+    for line in &shown {
+        traced_command(line, None);
+    }
     assert!(
-        stdout.contains(&format!("(cwd={})", project_dir.display())),
-        "dry-run 应打印工作目录: {stdout}"
+        shown.iter().any(|l| l.contains(":api$")),
+        "回显里的目录名应是项目目录名: {stdout}"
+    );
+    assert!(
+        shown.iter().any(|l| l.contains("pull")),
+        "dry-run 应回显 pull: {stdout}"
+    );
+    assert!(
+        shown
+            .iter()
+            .any(|l| l.contains(&project_dir.join("docker-compose.yml").display().to_string())),
+        "回显应指向项目下的 compose 文件: {stdout}"
     );
 }
 
@@ -402,7 +530,7 @@ echo "cwd=$PWD" >&2
 
     let (code, stdout, stderr) = run(
         &bindir,
-        &["--verbose"],
+        &[],
         &[
             ("DCU_COMPOSE_COMMAND", script.to_str().unwrap()),
             ("DCU_WHITELIST_ENABLE", "true"),
@@ -435,7 +563,7 @@ fn skip_up_when_pull_fetches_nothing() {
 
     let (code, stdout, stderr) = run(
         &bindir,
-        &["--verbose"],
+        &[],
         &[
             ("DCU_COMPOSE_COMMAND", fake.to_str().unwrap()),
             ("DCU_WHITELIST_ENABLE", "true"),
@@ -472,10 +600,12 @@ fn dry_run_still_prints_up_without_pull_check() {
     assert!(stdout.contains("up -d"), "dry-run 应打印 up: {stdout}");
 }
 
-/// pre_command / post_command 依次在 pull 之前与 post 之后执行，
-/// 且工作目录与 compose 命令一致。
+/// pre_command / post_command 整轮各执行一次，且工作目录是程序所在目录。
+///
+/// 两个钩子都属于「整个程序」而不是「某个项目」，
+/// 因此即使扫到多个项目，也只跑一遍。
 #[test]
-fn pre_and_post_commands_run_in_project_directory() {
+fn pre_and_post_commands_run_once_for_whole_program() {
     let (_root, bindir, stacks) = setup();
     // 把钩子的调用记到固定文件里，避免与假 compose 的输出混在一起。
     let log = bindir.join("hooks.log");
@@ -483,7 +613,10 @@ fn pre_and_post_commands_run_in_project_directory() {
         &bindir,
         &stacks,
         &format!(
-            "  pre_command: 'echo pre >> {}; echo cwd=$PWD >> {}'\n  post_command: 'echo post >> {}'\n",
+            "  pre_command: 'echo pre >> {}; echo cwd=$PWD >> {}'
+  post_command: 'echo post >> {}; echo cwd=$PWD >> {}'
+",
+            log.display(),
             log.display(),
             log.display(),
             log.display()
@@ -497,24 +630,26 @@ fn pre_and_post_commands_run_in_project_directory() {
         &[
             ("DCU_COMPOSE_COMMAND", fake.to_str().unwrap()),
             ("DCU_WHITELIST_ENABLE", "true"),
-            ("DCU_WHITELIST_DIRS", "nginx/api"),
+            ("DCU_WHITELIST_DIRS", "nginx/*"),
         ],
     );
     assert_eq!(code, 0, "{stderr}");
 
+    let cwd = format!("cwd={}", exe_dir().display());
     let content = fs::read_to_string(&log).unwrap();
     assert_eq!(
         content.lines().collect::<Vec<_>>(),
         vec![
             "pre".to_string(),
-            format!("cwd={}", stacks.join("nginx/api").display()),
+            cwd.clone(),
             "post".to_string(),
+            cwd.clone(),
         ],
-        "钩子应各执行一次，且工作目录是 compose 文件所在目录: {content}"
+        "两个钩子各只执行一次（扫到 2 个项目也只跑一遍），工作目录是程序所在目录: {content}"
     );
 }
 
-/// dry-run 只打印钩子命令，不执行。
+/// dry-run 只回显钩子命令，不执行。
 #[test]
 fn dry_run_prints_hooks_without_running() {
     let (_root, bindir, stacks) = setup();
@@ -523,7 +658,9 @@ fn dry_run_prints_hooks_without_running() {
         &bindir,
         &stacks,
         &format!(
-            "  pre_command: 'echo pre >> {}'\n  post_command: 'echo post >> {}'\n",
+            "  pre_command: 'echo pre >> {}'
+  post_command: 'echo post >> {}'
+",
             log.display(),
             log.display()
         ),
@@ -538,27 +675,43 @@ fn dry_run_prints_hooks_without_running() {
         ],
     );
     assert_eq!(code, 0, "{stderr}");
-    assert!(
-        stdout.contains("/bin/sh -c echo pre"),
-        "dry-run 应打印 pre: {stdout}"
-    );
-    assert!(
-        stdout.contains("/bin/sh -c echo post"),
-        "dry-run 应打印 post: {stdout}"
-    );
+    let commands = shown_commands(&stdout)
+        .iter()
+        .map(|line| traced_command(line, None))
+        .collect::<Vec<_>>();
+    let pre = commands
+        .iter()
+        .find(|c| c.contains("/bin/sh -c echo pre"))
+        .unwrap_or_else(|| panic!("dry-run 应回显 pre: {stdout}"));
+    let post = commands
+        .iter()
+        .find(|c| c.contains("/bin/sh -c echo post"))
+        .unwrap_or_else(|| panic!("dry-run 应回显 post: {stdout}"));
+    // 钩子属于整个程序，工作目录是程序所在目录。
+    let expected = format!(":{}", dir_name(&exe_dir()));
+    for command in [pre, post] {
+        assert!(
+            shown_commands(&stdout)
+                .iter()
+                .any(|line| line.contains(&expected) && line.ends_with(command)),
+            "钩子回显的目录名应是程序所在目录 {expected}: {stdout}"
+        );
+    }
     assert!(!log.exists(), "dry-run 不应真的执行钩子");
 }
 
-/// pre_command 失败时跳过 pull 与 up，但仍然执行 post_command。
+/// pre_command 失败时跳过全部更新，但仍然执行 post_command。
 #[test]
-fn failing_pre_command_skips_pull_and_up_but_runs_post() {
+fn failing_pre_command_skips_updates_but_runs_post() {
     let (_root, bindir, stacks) = setup();
     let log = bindir.join("hooks.log");
     write_config(
         &bindir,
         &stacks,
         &format!(
-            "  pre_command: 'exit 3'\n  post_command: 'echo post >> {}'\n",
+            "  pre_command: 'exit 3'
+  post_command: 'echo post >> {}'
+",
             log.display()
         ),
     );
@@ -566,11 +719,11 @@ fn failing_pre_command_skips_pull_and_up_but_runs_post() {
 
     let (code, stdout, stderr) = run(
         &bindir,
-        &["--verbose"],
+        &[],
         &[
             ("DCU_COMPOSE_COMMAND", fake.to_str().unwrap()),
             ("DCU_WHITELIST_ENABLE", "true"),
-            ("DCU_WHITELIST_DIRS", "nginx/api"),
+            ("DCU_WHITELIST_DIRS", "nginx/*"),
         ],
     );
     assert_ne!(code, 0, "pre 失败应让进程以非 0 退出: {stdout}{stderr}");
