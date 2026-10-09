@@ -1,17 +1,19 @@
 //! 命令回显：在调用外部命令之前，按 shell 提示符的风格打印它。
 //!
-//! 输出形如 `+ root@host:nginx$ docker compose -f a.yml pull`，
+//! 输出形如 `+ root@host:/opt/stacks/nginx$ docker compose -f a.yml pull`，
 //! 便于在一堆日志里一眼找出「到底执行了哪些命令、在哪个目录执行」。
 
 use std::path::Path;
 
 /// 打印一条即将执行的命令。
+///
+/// 目录取绝对路径：日志常被贴到别处排查，只有绝对路径才能确定命令跑在哪。
 pub fn print(dir: &Path, args: &[String]) {
     println!(
         "+ {}@{}:{}$ {}",
         username(),
         hostname(),
-        dir_name(dir),
+        dir.display(),
         args.join(" ")
     );
 }
@@ -44,13 +46,6 @@ fn real_uid() -> Option<u32> {
     line.split_whitespace().nth(1)?.parse().ok()
 }
 
-/// 目录名，即路径的最后一段；根目录与空路径的兜底是 `/`。
-fn dir_name(dir: &Path) -> String {
-    dir.file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| dir.display().to_string())
-}
-
 fn env_var(key: &str) -> Option<String> {
     env_var_of(&std::env::var(key).ok()?)
 }
@@ -68,13 +63,6 @@ fn env_var_of(value: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    #[test]
-    fn dir_name_is_last_segment() {
-        assert_eq!(dir_name(&PathBuf::from("/opt/stacks/nginx")), "nginx");
-        assert_eq!(dir_name(&PathBuf::from("/")), "/");
-    }
 
     #[test]
     fn env_var_of_skips_blank() {

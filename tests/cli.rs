@@ -276,7 +276,7 @@ fn calls(stdout: &str) -> Vec<Call> {
     calls
 }
 
-/// 从日志里取出 `+ 用户@主机:目录名$ <命令>` 形式的命令回显。
+/// 从日志里取出 `+ 用户@主机:目录$ <命令>` 形式的命令回显。
 fn shown_commands(stdout: &str) -> Vec<String> {
     stdout
         .lines()
@@ -285,10 +285,10 @@ fn shown_commands(stdout: &str) -> Vec<String> {
         .collect()
 }
 
-/// 校验一条回显符合 `+ 用户名@主机名:目录名$ 命令` 的格式，返回其中的命令部分。
+/// 校验一条回显符合 `+ 用户名@主机名:目录$ 命令` 的格式，返回其中的命令部分。
 ///
-/// 用户名与主机名依运行环境而异，只断言结构；`dir_name` 给定时一并校验目录名。
-fn traced_command(line: &str, dir_name: Option<&str>) -> String {
+/// 用户名与主机名依运行环境而异，只断言结构；`dir` 给定时一并校验目录。
+fn traced_command(line: &str, expected: Option<&str>) -> String {
     let rest = line
         .strip_prefix("+ ")
         .unwrap_or_else(|| panic!("回显应以 `+ ` 开头: {line}"));
@@ -303,19 +303,13 @@ fn traced_command(line: &str, dir_name: Option<&str>) -> String {
         .rsplit_once(':')
         .unwrap_or_else(|| panic!("回显应包含 `:` 分隔符: {line}"));
     assert!(!host.is_empty(), "主机名不应为空: {line}");
-    assert!(!dir.is_empty(), "目录名不应为空: {line}");
-    if let Some(expected) = dir_name {
-        assert_eq!(dir, expected, "目录名应是工作目录的最后一段: {line}");
+    assert!(!dir.is_empty(), "目录不应为空: {line}");
+    assert!(dir.starts_with('/'), "目录应是绝对路径: {line}");
+    if let Some(expected) = expected {
+        assert_eq!(dir, expected, "目录应是命令的工作目录: {line}");
     }
     assert!(!command.is_empty(), "命令不应为空: {line}");
     command.to_string()
-}
-
-/// `trace` 回显里的目录名：路径的最后一段。
-fn dir_name(dir: &Path) -> String {
-    dir.file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| dir.display().to_string())
 }
 
 /// 程序所在目录，也就是钩子的工作目录。
@@ -370,7 +364,7 @@ fn compose_runs_in_compose_file_directory() {
         "拉到了新镜像且容器在运行，应当 pull + up: {stdout}"
     );
 
-    // 日志无差别回显全部调用命令，格式为 `+ 用户@主机:目录名$ 命令`。
+    // 日志无差别回显全部调用命令，格式为 `+ 用户@主机:目录$ 命令`。
     let commands = shown_commands(&stdout)
         .iter()
         .map(|line| traced_command(line, None))
@@ -390,17 +384,17 @@ fn compose_runs_in_compose_file_directory() {
         4,
         "pull / 两次 ps / up 共 4 条命令都应回显: {stdout}"
     );
-    // 回显里的目录名要和工作目录一致，否则看不出命令跑在哪。
+    // 回显里的目录要和工作目录一致，否则看不出命令跑在哪。
     let api_trace = shown_commands(&stdout)
         .into_iter()
         .filter(|line| line.contains(&format!("-f {}", api_file.display())))
         .collect::<Vec<_>>();
     for line in &api_trace {
-        traced_command(line, Some("api"));
+        traced_command(line, Some(&api_dir.display().to_string()));
     }
 }
 
-/// 所有被调用的命令都要在调用前回显，格式为 `+ 用户名@主机名:目录名$ 命令`。
+/// 所有被调用的命令都要在调用前回显，格式为 `+ 用户名@主机名:目录$ 命令`。
 ///
 /// 用户名用 `USER` 环境变量固定，主机名依运行环境而异故只断言结构。
 #[test]
@@ -433,7 +427,7 @@ fn every_command_is_echoed_in_prompt_style() {
         .to_string();
 
     let lines = shown_commands(&stdout);
-    // 每条命令都带 `+ 用户名@主机名:目录名$ ` 前缀。
+    // 每条命令都带 `+ 用户名@主机名:目录$ ` 前缀。
     // 用户名取 USER，主机名以 /proc 的值为准，因此只断言用户名部分。
     assert!(
         lines.iter().all(|line| line.starts_with("+ tester@")),
@@ -483,8 +477,10 @@ fn dry_run_shows_working_directory() {
         traced_command(line, None);
     }
     assert!(
-        shown.iter().any(|l| l.contains(":api$")),
-        "回显里的目录名应是项目目录名: {stdout}"
+        shown
+            .iter()
+            .any(|l| l.contains(&format!(":{}", project_dir.display()))),
+        "回显里的目录应是项目目录的绝对路径: {stdout}"
     );
     assert!(
         shown.iter().any(|l| l.contains("pull")),
@@ -688,13 +684,13 @@ fn dry_run_prints_hooks_without_running() {
         .find(|c| c.contains("/bin/sh -c echo post"))
         .unwrap_or_else(|| panic!("dry-run 应回显 post: {stdout}"));
     // 钩子属于整个程序，工作目录是程序所在目录。
-    let expected = format!(":{}", dir_name(&exe_dir()));
+    let expected = format!(":{}", exe_dir().display());
     for command in [pre, post] {
         assert!(
             shown_commands(&stdout)
                 .iter()
                 .any(|line| line.contains(&expected) && line.ends_with(command)),
-            "钩子回显的目录名应是程序所在目录 {expected}: {stdout}"
+            "钩子回显的目录应是程序所在目录 {expected}: {stdout}"
         );
     }
     assert!(!log.exists(), "dry-run 不应真的执行钩子");
