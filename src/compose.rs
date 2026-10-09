@@ -1,4 +1,4 @@
-//! 对单个 compose 项目执行 pull / up。
+//! 执行外部命令：compose 项目的 pull / up，以及程序级的前后置钩子。
 
 use std::path::Path;
 use std::process::Command;
@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 
 use crate::config::Config;
 use crate::scanner::ComposeProject;
+use crate::trace;
 
 /// 对给定项目执行一次更新；`dry_run` 为真时只打印命令不执行。
 ///
@@ -28,22 +29,12 @@ pub fn update_project(
     base.push("-f".to_string());
     base.push(project.file_path().display().to_string());
 
-    // pull / up / pre / post 中任何一条失败都不打断其余命令，最后统一报错。
+    // pull / up 中任何一条失败都不打断其余命令，最后统一报错。
     let mut first_error: Option<anyhow::Error> = None;
-
-    // pre_command 是「扫描前」钩子：它成功了才轮到 pull/up。
-    // 失败说明依赖没准备好，继续 pull/up 没有意义，因此只跑 post 收尾。
-    let mut pre_ok = true;
-    if let Some(pre) = config.compose.pre_args() {
-        if let Err(err) = run(&pre, project, dry_run, verbose) {
-            pre_ok = false;
-            first_error.get_or_insert(err);
-        }
-    }
 
     // pull 本次是否拉到了新镜像。pull 未执行或未拉到内容时为 false。
     let mut pulled_something = false;
-    if config.compose.pull && pre_ok {
+    if config.compose.pull {
         let mut args = base.clone();
         args.push("pull".to_string());
         match run_capture(&args, project, dry_run, verbose) {
@@ -54,7 +45,7 @@ pub fn update_project(
         }
     }
 
-    if config.compose.up && pre_ok {
+    if config.compose.up {
         // pull 明确「什么都没拉到」时直接跳过 up：镜像没变，up 只会空跑。
         // 只有在 pull 实际执行过、且明确报告无更新时才跳过，
         // 未开启 pull 或 dry-run 场景仍按原逻辑推进。
@@ -62,7 +53,6 @@ pub fn update_project(
             println!("  跳过 up: pull 未拉取到新内容");
         } else {
             match ensure_running(project, &base, dry_run)? {
-                // 探测用的 ps 一定会执行，不需要在 verbose 下重复打印。
                 UpDecision::Proceed => {
                     let mut args = base;
                     args.push("up".to_string());
@@ -82,18 +72,18 @@ pub fn update_project(
         }
     }
 
-    // post_command 是「更新完成后」钩子，无论前面成功失败都要跑，
-    // 否则失败时收尾动作（清理旧镜像、发通知等）会被跳过。
-    if let Some(post) = config.compose.post_args() {
-        if let Err(err) = run(&post, project, dry_run, verbose) {
-            first_error.get_or_insert(err);
-        }
-    }
-
     match first_error {
         Some(err) => Err(err),
         None => Ok(()),
     }
+}
+
+/// 执行程序级钩子（`compose.pre_command` / `compose.post_command`）。
+///
+/// 与 compose 命令不同，钩子整轮只跑一次，工作目录是 `dir`（程序所在目录），
+/// 与配置文件、相对路径的解析基准保持一致。
+pub fn run_hook(args: &[String], dir: &Path, dry_run: bool, verbose: bool) -> Result<()> {
+    run_in(args, dir, dry_run, verbose)
 }
 
 /// 判断 `docker compose pull` 的输出是否表示真的拉到了新镜像。
@@ -130,8 +120,9 @@ enum UpDecision {
 /// 少了它，已停止的容器会被误判成「不存在」。
 fn ensure_running(project: &ComposeProject, base: &[String], dry_run: bool) -> Result<UpDecision> {
     if dry_run {
-        let shown = display(&project.dir, base, &["ps", "--all", "-q"]);
-        println!("  [dry-run] {shown}  # 检查容器是否存在且正在运行");
+        let args = probe_args(base, &["ps", "--all", "-q"]);
+        trace::print(&project.dir, &args);
+        println!("  [dry-run] 以上命令用于检查容器是否存在且正在运行");
         return Ok(UpDecision::Proceed);
     }
 
@@ -149,9 +140,9 @@ fn ensure_running(project: &ComposeProject, base: &[String], dry_run: bool) -> R
 /// 用 compose 的 `ps` 子命令列出容器 ID。
 fn probe_ids(project: &ComposeProject, base: &[String], sub: &[&str]) -> Result<Vec<String>> {
     let args = probe_args(base, sub);
-    let shown = display(&project.dir, base, sub);
+    let shown = display(&args);
     let (program, rest) = args.split_first().context("命令不能为空")?;
-    println!("  $ {shown}");
+    trace::print(&project.dir, &args);
 
     let output = Command::new(program)
         .args(rest)
@@ -184,35 +175,32 @@ fn probe_args(base: &[String], sub: &[&str]) -> Vec<String> {
     args
 }
 
-/// 拼出带工作目录前缀的展示命令，如 `(cwd=/opt/stacks/nginx) docker compose ps -q`。
+/// 拼出一条用于报错的完整命令，如 `docker compose -f a.yml ps -q`。
 ///
-/// 日志里只看到 `docker compose ps -q` 无法判断在哪个目录执行，
-/// 而目录正是决定「compose 项目是哪一个」的关键，所以统一打印出来。
-fn display(dir: &Path, base: &[String], sub: &[&str]) -> String {
-    format!(
-        "(cwd={}) {}",
-        dir.display(),
-        probe_args(base, sub).join(" ")
-    )
+/// 报错信息里带上命令本身，才能和日志里的回显对得上。
+fn display(args: &[String]) -> String {
+    args.join(" ")
 }
 
 /// 清理悬空镜像，整个流程结束后只调用一次。
-pub fn prune(config: &Config, dry_run: bool, verbose: bool) -> Result<()> {
+///
+/// 与程序级钩子一样，工作目录是程序所在目录。
+pub fn prune(config: &Config, dir: &Path, dry_run: bool, verbose: bool) -> Result<()> {
     let args: Vec<String> = ["docker", "image", "prune", "-f"]
         .iter()
         .map(|s| s.to_string())
         .collect();
     let shown = args.join(" ");
+    trace::print(dir, &args);
     if dry_run {
-        println!("[prune] [dry-run] {shown}");
+        println!("  [dry-run] 跳过执行");
         return Ok(());
-    }
-    if verbose {
-        println!("[prune] $ {shown}");
     }
     let (program, rest) = args.split_first().context("命令不能为空")?;
     let output = Command::new(program)
         .args(rest)
+        .current_dir(dir)
+        .env("PWD", dir)
         .output()
         .with_context(|| format!("无法执行 `{shown}`"))?;
     if verbose {
@@ -237,14 +225,12 @@ fn run_capture(
     verbose: bool,
 ) -> Result<String> {
     let (program, rest) = args.split_first().context("命令不能为空")?;
-    let shown = format!("(cwd={}) {}", project.dir.display(), args.join(" "));
+    let shown = display(args);
+    trace::print(&project.dir, args);
     if dry_run {
-        println!("  [dry-run] {shown}");
+        println!("  [dry-run] 跳过执行");
         // dry-run 不去假设结果，返回空串让上层按原逻辑推进。
         return Ok(String::new());
-    }
-    if verbose {
-        println!("  $ {shown}");
     }
 
     let output = Command::new(program)
@@ -281,22 +267,27 @@ fn run_capture(
 }
 
 fn run(args: &[String], project: &ComposeProject, dry_run: bool, verbose: bool) -> Result<()> {
+    run_in(args, &project.dir, dry_run, verbose)
+}
+
+/// 在 `dir` 下执行命令；`dry_run` 为真时只回显命令不执行。
+///
+/// compose 会读取工作目录下的 `.env` 等文件，因此无论是 compose 命令还是钩子，
+/// 都切换到对应的目录执行，并把 `PWD` 一并设置好，
+/// 兼容自身不做该处理的实现（如 `docker-compose`）。
+fn run_in(args: &[String], dir: &Path, dry_run: bool, verbose: bool) -> Result<()> {
     let (program, rest) = args.split_first().context("命令不能为空")?;
-    let shown = format!("(cwd={}) {}", project.dir.display(), args.join(" "));
+    let shown = display(args);
+    trace::print(dir, args);
     if dry_run {
-        println!("  [dry-run] {shown}");
+        println!("  [dry-run] 跳过执行");
         return Ok(());
-    }
-    if verbose {
-        println!("  $ {shown}");
     }
 
     let output = Command::new(program)
         .args(rest)
-        // compose 会读取当前目录的 .env 等文件，因此切换到 compose 文件所在目录执行。
-        .current_dir(&project.dir)
-        // 显式设置工作目录，兼容自身未做该处理的 compose 实现（如 `docker-compose`）。
-        .env("PWD", &project.dir)
+        .current_dir(dir)
+        .env("PWD", dir)
         .output()
         .with_context(|| format!("无法执行 `{shown}`，请确认已安装 {program}"))?;
 

@@ -6,6 +6,7 @@ mod compose;
 mod config;
 mod env;
 mod scanner;
+mod trace;
 
 use std::env::current_exe;
 use std::path::{Path, PathBuf};
@@ -93,31 +94,71 @@ fn run() -> Result<ExitCode> {
             print_projects(&projects, &config, true);
             Ok(ExitCode::SUCCESS)
         }
-        Command::Update => {
-            let projects = scanner::scan(&config)?;
-            if projects.is_empty() {
-                println!(
-                    "未发现 docker-compose 文件: {}",
-                    config.compose.base_dir.display()
-                );
-                return Ok(ExitCode::SUCCESS);
-            }
-            print_projects(&projects, &config, false);
-            let failed = run_updates(&projects, &config, cli.dry_run, cli.verbose);
-            // 清理放在全部项目更新之后，避免每个项目都跑一次。
-            if config.compose.prune && !failed {
-                if let Err(err) = compose::prune(&config, cli.dry_run, cli.verbose) {
-                    eprintln!("清理悬空镜像失败: {err:#}");
-                    return Ok(ExitCode::FAILURE);
-                }
-            }
-            Ok(if failed {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            })
+        Command::Update => update_all(&config, &workdir, cli.dry_run, cli.verbose),
+    }
+}
+
+/// `update` 的完整流程：程序启动前钩子 → 扫描 → 逐个更新 → 清理 → 程序完成后钩子。
+///
+/// 两个钩子整轮各执行一次，工作目录都是程序所在目录；
+/// 钩子失败与项目失败都会让进程以非 0 退出码结束。
+fn update_all(config: &Config, workdir: &Path, dry_run: bool, verbose: bool) -> Result<ExitCode> {
+    let mut hook_error: Option<anyhow::Error> = None;
+
+    // pre_command 在整个程序开始干活之前执行，成功了才有后续动作：
+    // 前置命令失败说明依赖没准备好，继续拉镜像并重建容器只会得到一个起不来的栈。
+    let mut pre_ok = true;
+    if let Some(pre) = config.compose.pre_args() {
+        if let Err(err) = compose::run_hook(&pre, workdir, dry_run, verbose) {
+            pre_ok = false;
+            hook_error.get_or_insert(err);
         }
     }
+
+    let failed = if pre_ok {
+        update_projects(config, workdir, dry_run, verbose)?
+    } else {
+        false
+    };
+
+    // post_command 在整个流程结束后执行，无论前面成功与否都要跑，
+    // 否则失败时收尾动作（清理旧镜像、发通知等）会被跳过。
+    if let Some(post) = config.compose.post_args() {
+        if let Err(err) = compose::run_hook(&post, workdir, dry_run, verbose) {
+            hook_error.get_or_insert(err);
+        }
+    }
+
+    if let Some(err) = hook_error {
+        return Err(err);
+    }
+    Ok(if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+/// 扫描全部项目并逐个更新，返回是否有项目失败。
+fn update_projects(config: &Config, workdir: &Path, dry_run: bool, verbose: bool) -> Result<bool> {
+    let projects = scanner::scan(config)?;
+    if projects.is_empty() {
+        println!(
+            "未发现 docker-compose 文件: {}",
+            config.compose.base_dir.display()
+        );
+        return Ok(false);
+    }
+    print_projects(&projects, config, false);
+    let failed = run_updates(&projects, config, dry_run, verbose);
+    // 清理放在全部项目更新之后，避免每个项目都跑一次。
+    if config.compose.prune && !failed {
+        if let Err(err) = compose::prune(config, workdir, dry_run, verbose) {
+            eprintln!("清理悬空镜像失败: {err:#}");
+            return Ok(true);
+        }
+    }
+    Ok(failed)
 }
 
 /// 返回可执行文件所在目录。
