@@ -1,6 +1,6 @@
 [package]
 name = "docker-container-update"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 # 依赖（clap 4.6 / indexmap 2）要求 1.85+
 rust-version = "1.85"
