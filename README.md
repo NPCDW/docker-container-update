@@ -13,7 +13,7 @@
 - **支持 `*` 与 `**` 通配**：如 `nginx/*`、`stacks/**/prod`。
 - **安全更新**：执行 `up -d` 前先确认容器「存在且正在运行」，容器不存在或已停止时跳过 `up`；
   `pull` 没拉到新内容时也跳过 `up`。
-- **命令全量回显**：每条被调用的命令都在执行前以 `+ 用户名@主机名:目录名$ 命令` 打印。
+- **命令全量回显**：每条被调用的命令都在执行前以 `+ 用户名@主机名:目录绝对路径$ 命令` 打印。
 - **`--dry-run`**：只打印将要执行的命令，不实际执行。
 - **全局前后置钩子**：`compose.pre_command` 在整个程序启动前、`compose.post_command` 在整个程序执行完成后各执行一次自定义 shell 命令。
 
@@ -201,11 +201,11 @@ DCU_WHITELIST_DIRS=nginx/api,nginx/web
 - **每条被调用的命令都在调用前回显**，格式仿 shell 提示符：
 
   ```
-  + 用户名@主机名:目录名$ docker compose -f /opt/stacks/nginx/docker-compose.yml pull
+  + 用户名@主机名:/opt/stacks/nginx$ docker compose -f /opt/stacks/nginx/docker-compose.yml pull
   ```
 
   用户名取 `USER` / `LOGNAME`（缺失时退回真实 UID），主机名取 `/proc/sys/kernel/hostname`
-  （取不到时退回 `HOSTNAME`），目录名是该命令实际执行的工作目录的最后一段。
+  （取不到时退回 `HOSTNAME`），目录是该命令实际执行的工作目录的绝对路径。
   普通日志照常打印，`-v` 只额外控制命令输出内容。
 - **`pull` 没拉到新内容就跳过 `up`**：对比 `pull` 的输出，若只是 `Image is up to date` /
   各层 `Already exists`（本地镜像已是最新），说明没有任何更新，`up -d` 只会空跑，直接跳过。
